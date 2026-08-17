@@ -83,8 +83,25 @@ curl -fsSL https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/ma
 
 | where you run it | what it does |
 |---|---|
-| **on the router** | detects `opkg` vs `apk`, installs the two packages (from local `.apk/.ipk` files in the current dir / `$BD_PKGDIR`, otherwise from the router's configured feeds), enables + starts the service, runs a sanity check and prints setup notes |
+| **on the router** | detects `opkg` vs `apk`, installs the two packages — from local `.apk/.ipk` files in the current dir / `$BD_PKGDIR`, else the latest GitHub **release** for your CPU (`bd-controls-<arch>.tar.gz`), else feeds only with `--from-feed` — then enables + starts the service, runs a sanity check and prints setup notes |
 | **on an OpenWrt build host** | finds the source tree (`rules.mk`), clones the repo into `package/BD-Controls-OpenWRT-Luci`, runs `make defconfig` only if missing, builds both packages, then **auto-detects your router** (your LAN's default gateway) and pushes + installs onto it in one go — no IP to type |
+
+**How the router gets the packages.** BD Controls is *not* published in any
+OpenWrt/ImmortalWrt feed, so the installer never silently assumes it is. On
+the router it looks, in order:
+
+1. **local files** — any `bd-controls_*` + `luci-app-bd-controls_*`
+   `.apk`/`.ipk` in the current directory or `$BD_PKGDIR` (that's what you get
+   after `scp`-ing built packages over),
+2. **the latest GitHub release** — downloaded automatically as
+   `bd-controls-<arch>.tar.gz` (arch detected via `apk print-arch` /
+   `/etc/apk/arch` or `opkg print-architecture`),
+3. **feeds** — only when you pass `--from-feed` (in case you run a custom
+   feed that does carry the packages).
+
+If none of those yield the packages, it stops with a clear message telling
+you exactly how to get them (build + `scp`, or run the installer on a build
+host), instead of failing with a confusing "no such package".
 
 **Router IP is never assumed.** Your router does *not* need to be
 `192.168.1.1`. On the build host the installer figures out the router's
@@ -105,6 +122,8 @@ sh install.sh --router 192.168.2.1         # any IP works
 sh install.sh --router openwrt.lan         # or a hostname
 sh install.sh --user admin --port 2222 --router 192.168.2.1
 sh install.sh --no-push                    # build only, print the next step
+sh install.sh --from-feed                  # router: install from your feeds
+sh install.sh --release v1.1.0             # router: fetch a specific release tag
 ```
 
 Safety & error handling built in:

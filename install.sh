@@ -39,6 +39,11 @@ set -eu
 BD_URL="https://github.com/asma019/BD-Controls-OpenWRT-Luci"
 BD_DIR="BD-Controls-OpenWRT-Luci"
 
+# Where prebuilt packages are published (GitHub Releases). The asset name is
+# bd-controls-<arch>.tar.gz and must contain bd-controls_*.apk|ipk plus
+# luci-app-bd-controls_*.apk|ipk for that architecture.
+REL_REF="latest"                       # or --release <tag> (a release tag)
+
 info(){ printf '%s\n' " * $*"; }
 ok(){   printf '%s\n' "   OK: $*"; }
 warn(){ printf '%s\n' " !! $*" >&2; }
@@ -46,6 +51,7 @@ die(){  printf '\n[FAIL] %s\n' "$*" >&2; exit 1; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 
 TMPD="${TMPDIR:-/tmp}/bd-install.$$"
+mkdir -p "$TMPD"
 trap 'rm -rf "$TMPD"' EXIT HUP INT TERM
 
 usage(){
@@ -54,8 +60,10 @@ Usage: sh install.sh [options]
 
 Auto-detects the environment and installs BD Controls:
 
-  On an OpenWrt router ......... installs the two packages, enables and
-                                starts the service, runs a sanity check.
+  On an OpenWrt router ......... installs the two packages (from local
+                                .apk/.ipk files, else the latest GitHub
+                                release, else feeds with --from-feed),
+                                enables + starts the service, sanity-checks.
   On an OpenWrt build host .... clones the repo, builds both packages, then
                                 auto-detects your router (your default
                                 gateway) and pushes + installs it in one go.
@@ -70,7 +78,11 @@ Options:
   --port <n>           ssh/scp port (default: 22)
   --no-push            build host: build only, do not push, just print the
                        next step with the detected router address
-  --skip-build         router: only install local artifacts/feeds, skip build
+  --from-feed          router: install from the router's feeds instead of
+                       trying the GitHub release (feeds normally have no
+                       bd-controls packages)
+  --release <tag>      router: fetch a specific release tag instead of latest
+  --skip-build         accepted for forward-compat
   -h, --help           show this help
 
 Env:
@@ -79,10 +91,10 @@ Env:
 EOF
 }
 
-fetch(){                   # $1 url  $2 outfile
+fetch(){                   # $1 url  $2 outfile; fails (non-zero) on HTTP errors
     if have curl; then         curl -fsSL --retry 2 -o "$2" "$1"
     elif have wget; then       wget -q -O "$2" "$1"
-    elif have uclient-fetch; then uclient-fetch -q -O "$2" "$1"
+    elif have uclient-fetch; then uclient-fetch -q -f -O "$2" "$1"
     else die "no downloader found - need curl, wget or uclient-fetch"; fi
 }
 
@@ -105,6 +117,88 @@ pick_artifact(){             # $1 = pkg name prefix; prints first match, if any
     return 1
 }
 
+detect_arch(){                 # echo the package arch (aarch64_cortex-a53, mipsel_24kc, ...)
+    local a=""
+    if have apk; then
+        a=$(apk print-arch 2>/dev/null || true)
+        [ -n "$a" ] && { echo "$a"; return 0; }
+        if [ -r /etc/apk/arch ]; then a=$(cat /etc/apk/arch || true); [ -n "$a" ] && { echo "$a"; return 0; }; fi
+    fi
+    if have opkg; then
+        a=$(opkg print-architecture 2>/dev/null | awk '$1=="arch"{a=$2} END{if(a)print a}' || true)
+        [ -n "$a" ] && { echo "$a"; return 0; }
+        if [ -r /etc/opkg/architectures ]; then a=$(head -1 /etc/opkg/architectures || true); [ -n "$a" ] && { echo "$a"; return 0; }; fi
+    fi
+    return 1
+}
+
+install_local(){               # $1 = pm  $2 = bd-controls pkg  $3 = luci pkg
+    info "installing: $2 $3"
+    case "$1" in
+        opkg) opkg install --force-reinstall "$2" "$3" || die "opkg install failed" ;;
+        apk)  apk add --allow-untrusted -f -q "$2" "$3" || die "apk add failed" ;;
+    esac
+}
+
+install_feeds(){               # $1 = pm  (only used with --from-feed)
+    info "no local packages - installing from the router's feeds (--from-feed)"
+    case "$1" in
+        opkg) opkg update || die "opkg update failed"
+              opkg install bd-controls luci-app-bd-controls || die "opkg install failed - bd-controls is not in these feeds; see README" ;;
+        apk)  apk update || die "apk update failed"
+              apk add bd-controls luci-app-bd-controls || die "apk add failed - bd-controls is not in these feeds; see README" ;;
+    esac
+}
+
+fetch_release(){               # $1 = pm; download the release tarball and install; 0=ok 1=unavailable
+    local pm=$1 arch rel
+    arch=$(detect_arch) || { warn "cannot detect the CPU architecture - release download skipped"; return 1; }
+    rel="bd-controls-$arch.tar.gz"
+    info "no local packages - trying the latest GitHub release ($rel)"
+    if ! fetch "$BD_URL/releases/$REL_REF/download/$rel" "$TMPD/$rel"; then
+        warn "release asset not found: $rel"
+        return 1
+    fi
+    if ! tar -xzf "$TMPD/$rel" -C "$TMPD" 2>/dev/null; then
+        warn "downloaded archive looks corrupt: $rel"
+        return 1
+    fi
+    local a1 a2
+    a1=$(find "$TMPD" -maxdepth 1 -name 'bd-controls_*' | head -1) || a1=""
+    a2=$(find "$TMPD" -maxdepth 1 -name 'luci-app-bd-controls_*' | head -1) || a2=""
+    if [ -z "$a1" ] || [ -z "$a2" ]; then
+        warn "release archive does not contain both packages"
+        return 1
+    fi
+    install_local "$pm" "$a1" "$a2"
+}
+
+pkg_unavailable(){             # nothing installable was found - tell the user exactly what to do
+    die "no BD Controls packages were found.
+
+  BD Controls is NOT published in any OpenWrt/ImmortalWrt feed, so the
+  installer cannot fetch it from here. Do one of these:
+
+  1. EASIEST - build on a build host (or grab a published release) and copy
+     the two packages to this router, then re-run the installer in that dir:
+
+       scp bd-controls_*.apk luci-app-bd-controls_*.apk root@<this router>:/tmp/
+       cd /tmp && sh install.sh
+     (or:  BD_PKGDIR=/tmp sh install.sh)
+
+  2. From the release tarball published on the GitHub releases page:
+       sh install.sh --release <tag>      # tries bd-controls-<arch>.tar.gz
+     A 'latest' release is auto-tried when this message appears.
+
+  3. Build them yourself on an OpenWrt build host:
+       cd \$TOPDIR/package
+       git clone $BD_URL.git
+       cd \$TOPDIR
+       make package/$BD_DIR/compile
+     then scp bin/*/packages/*/bd-controls_*.apk (and luci-..._*.apk) here.
+     Or run 'sh install.sh' on the build host to build and push automatically."
+}
+
 router_install(){
     root_check
     local pm=""
@@ -116,26 +210,18 @@ router_install(){
     mem=$(awk '/MemTotal/{print int($2/1024)" MB"}' /proc/meminfo 2>/dev/null)
     [ -n "$mem" ] && info "router RAM: $mem"
 
-    # 1) local artifacts first, 2) configured feeds as fallback
+    # 1) local artifacts, 2) release (or feeds when --from-feed), 3) clear error
     local a1 a2
     a1=$(pick_artifact 'bd-controls_') || a1=""
     a2=$(pick_artifact 'luci-app-bd-controls_') || a2=""
     if [ -n "$a1" ] && [ -n "$a2" ]; then
-        info "installing local artifacts: $a1 $a2"
-        case "$pm" in
-            opkg) opkg update >/dev/null 2>&1 || :
-                  opkg install --force-reinstall "$a1" "$a2" || die "opkg install failed" ;;
-            apk)  apk update >/dev/null 2>&1 || :
-                  apk add --allow-untrusted -f -q "$a1" "$a2" || die "apk add failed" ;;
-        esac
+        install_local "$pm" "$a1" "$a2"
+    elif [ "$FROMFEED" = 1 ]; then
+        install_feeds "$pm"
+    elif fetch_release "$pm"; then
+        :
     else
-        info "no local artifacts - installing from the router's feeds"
-        case "$pm" in
-            opkg) opkg update || die "opkg update failed"
-                  opkg install bd-controls luci-app-bd-controls || die "opkg install failed" ;;
-            apk)  apk update || die "apk update failed"
-                  apk add bd-controls luci-app-bd-controls || die "apk add failed" ;;
-        esac
+        pkg_unavailable
     fi
 
     [ -x /etc/init.d/bd-controls ] || die "service script missing after install (install failed?)"
@@ -342,6 +428,7 @@ ROUTER=""
 RHUSER=""
 PORT=""
 NOPUSH=0
+FROMFEED=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --router)      ROUTER=$2; shift 2 ;;
@@ -351,6 +438,9 @@ while [ "$#" -gt 0 ]; do
         --port)        PORT=$2; shift 2 ;;
         --port=*)      PORT=${1#--port=}; shift ;;
         --no-push)     NOPUSH=1; shift ;;
+        --from-feed)   FROMFEED=1; shift ;;
+        --release)     REL_REF=$2; shift 2 ;;
+        --release=*)   REL_REF=${1#--release=}; shift ;;
         --skip-build)  : ;;                        # accepted for forward-compat
         -h|--help)     usage; exit 0 ;;
         *)             die "unknown option: $1 (see --help)" ;;
