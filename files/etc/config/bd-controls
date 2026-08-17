@@ -1,0 +1,36 @@
+# BD Controls configuration.
+# Copyright (C) 2026 Mehedi Hasan <hello@mehedims.com>
+# SPDX-License-Identifier: GPL-2.0-only
+
+config monitor
+	option enabled '1'
+	option poll '2'
+	# usage data is volatile (tmpfs) by design; only block/limit/schedule
+	# persist, in this config file. data_dir is reserved for future use.
+	option data_dir '/etc/bd-data'
+	option ifaces 'br-lan'
+
+config tc
+	option enabled '0'
+	option iface_lan 'br-lan'
+	option iface_wan 'wan'
+	option ceil '100000'
+
+# example managed user - sections are created automatically when you
+# block/limit a client from the web UI. MAC is the identity key.
+config user 'example'
+	option mac '00:11:22:33:44:55'
+	option name 'Example Phone'
+	option block '0'
+	option dn '0'
+	option up '0'
+
+# example schedule  (0=allow 1=block 2=limit)
+config schedule 'example_sched'
+	option client 'example'
+	option days 'mon tue wed thu fri'
+	option start '22:00'
+	option end '07:00'
+	option mode '1'
+	option limit_dn '0'
+	option limit_up '0'

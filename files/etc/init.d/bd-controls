@@ -1,0 +1,35 @@
+#!/bin/sh /etc/rc.common
+# bd-controls procd service.
+#
+# Copyright (C) 2026 Mehedi Hasan <hello@mehedims.com>
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=90
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/bd-controls
+
+start_service() {
+    procd_open_instance
+    procd_set_param command "$PROG" daemon
+    # restart after 5 s, but at most 5 times/hour, then back off - a
+    # crashing daemon must never busy-loop respawn and burn CPU.
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+}
+
+stop_service() {
+    # procd sends TERM; the daemon trap flushes rollups and removes our
+    # firewall/tc rules + tmpfs state. Defensive second pass: if anything
+    # was left behind (e.g. SIGKILL), purge it now so stop/uninstall is
+    # clean and idempotent.
+    "$PROG" shutdown >/dev/null 2>&1 || :
+    return 0
+}
+
+reload_service() {
+    stop
+    sleep 1
+    start
+}

@@ -1,0 +1,15 @@
+# OpenWrt / ImmortalWrt build artifacts
+*.apk
+*.ipk
+*.opkg
+*.tar.gz
+*.tgz
+
+# editor & OS junk
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# local Claude Code tooling (not part of the package)
+.claude/

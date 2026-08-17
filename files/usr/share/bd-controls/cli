@@ -1,0 +1,178 @@
+#!/bin/sh
+# cli - command handlers for bd-controls. Sourced by /usr/bin/bd-controls.
+#
+# Copyright (C) 2026 Mehedi Hasan <hello@mehedims.com>
+# SPDX-License-Identifier: GPL-2.0-only
+
+print_usage () {
+    cat <<EOF 2>&1
+usage: $0 <command>
+  daemon                  run the monitoring loop (init script)
+  status [-f]             one-shot JSON snapshot (-f forces fresh compute)
+  apply | reload          re-apply firewall + tc rules from uci now
+  block <mac> on|off      block/unblock a client (persistent)
+  limit <mac> <dn> <up>   per-user speed cap in kbit (0 = off, persists)
+  reset <mac>             zero lifetime counters for a client
+  usage                   hourly (24h) + daily (7d) history JSON
+  shutdown                remove our fw/tc rules + tmpfs state (init stop)
+  version
+EOF
+}
+
+# one full collection pass + status.json rewrite
+collect_once () {
+    load_uci
+    read_sys
+    read_net
+    [ "${MON_ENABLED:-1}" = 1 ] || return 0
+    read_leases
+    sync_from_leases
+    build_ipmap
+    merge_counters
+    per_user_speed
+    apply_rules
+    apply_tc
+    hourly_rollup
+    disc_track
+    rollup_tick
+}
+
+full_status () {
+    collect_once
+    status_json > "$TMP/status.$$.tmp" && mv -f "$TMP/status.$$.tmp" "$TMP/status.json"
+}
+
+# ------------------------------------------------------------ commands
+cmd_status () {                      # args: [-f]
+    if [ "$1" = "-f" ] || [ ! -f "$TMP/daemon.pid" ] \
+        || ! kill -0 "$(cat "$TMP/daemon.pid")" 2>/dev/null; then
+        LASTTS=$(now); full_status
+    fi
+    cat "$TMP/status.json" 2>/dev/null || { LASTTS=$(now); full_status; cat "$TMP/status.json"; }
+}
+
+cmd_apply () {
+    LASTTS=$(now)
+    full_status
+    echo ok
+}
+
+# ensure a typed user section exists for a mac key
+ensure_user () {      # $1 key  $2 mac (colon form)
+    local sec="u_$1"
+    if ! uci -q get "bd-controls.$sec" >/dev/null 2>&1; then
+        uci -q set "bd-controls.$sec=user"
+        uci -q set "bd-controls.$sec.mac=$2"
+    fi
+}
+
+cmd_block () {       # <mac> on|off
+    [ $# -ge 2 ] || { echo "usage: block <mac> on|off" >&2; return 1; }
+    local k;  k=$(keymac "$1")
+    ensure_user "$k" "$1"
+    uci -q set "bd-controls.u_$k.block=$2"
+    uci -q commit bd-controls
+    cmd_apply >/dev/null
+    echo ok
+}
+
+cmd_limit () {       # <mac> <dn_kbit> <up_kbit>
+    [ $# -ge 3 ] || { echo "usage: limit <mac> <dn_kbit> <up_kbit>" >&2; return 1; }
+    local k;  k=$(keymac "$1")
+    ensure_user "$k" "$1"
+    uci -q set "bd-controls.u_$k.dn=$2"
+    uci -q set "bd-controls.u_$k.up=$3"
+    uci -q commit bd-controls
+    cmd_apply >/dev/null
+    echo ok
+}
+
+cmd_reset () {       # <mac>
+    [ $# -ge 2 ] || { echo "usage: reset <mac>" >&2; return 1; }
+    local k;  k=$(keymac "$1")
+    state_get "$k" && { S_RX=0; S_TX=0; S_DRX=0; S_DTX=0; state_put "$k"; }
+    echo ok
+}
+
+cmd_usage () { usage_json; }
+
+# regex validating HH:MM (24h)
+td_re="^([01][0-9]|2[0-3]):[0-5][0-9]$"
+
+# sched <mac> set <days> <start> <end> <mode 0|1|2> [dn] [up]
+# sched <mac> clear
+# One schedule per client (UI-managed). days: space separated mon..sun.
+cmd_sched () {
+    local mac="$1" cmd="$2"
+    [ -n "$mac" ] || { echo "usage: sched <mac> set|clear ..." >&2; return 1; }
+    local k; k=$(keymac "$mac")
+    if [ "$cmd" = "clear" ]; then
+        uci -q delete "bd-controls.sched_$k"
+        uci -q commit bd-controls
+        cmd_apply >/dev/null
+        echo ok
+        return 0
+    fi
+    [ "$cmd" = "set" ] || { echo "usage: sched <mac> set <days> <start> <end> <mode> [dn] [up]" >&2; return 1; }
+    [ $# -ge 6 ] || { echo "usage: sched <mac> set <days> <start> <end> <mode> [dn] [up]" >&2; return 1; }
+    local days="$3" start="$4" end="$5" mode="$6" dn="${7:-0}" up="${8:-0}"
+    echo "$start" | grep -Eq "$td_re" || { echo "bad start time '$start'" >&2; return 1; }
+    echo "$end" | grep -Eq "$td_re"   || { echo "bad end time '$end'" >&2; return 1; }
+    case "$mode" in 0|1|2) ;; *) echo "mode must be 0|1|2" >&2; return 1;; esac
+    local d all="mon tue wed thu fri sat sun"
+    for d in $days; do
+        case " $all " in *" $d "*) ;; *) echo "bad day '$d'" >&2; return 1;; esac
+    done
+    [ -n "$days" ] || { echo "no days given" >&2; return 1; }
+    ensure_user "$k" "$mac"
+    # fixed section name per client: replace if it already exists
+    uci -q delete "bd-controls.sched_$k"
+    uci -q set "bd-controls.sched_$k=schedule"
+    uci -q set "bd-controls.sched_$k.client=u_$k"
+    uci -q set "bd-controls.sched_$k.days=$days"
+    uci -q set "bd-controls.sched_$k.start=$start"
+    uci -q set "bd-controls.sched_$k.end=$end"
+    uci -q set "bd-controls.sched_$k.mode=$mode"
+    uci -q set "bd-controls.sched_$k.limit_dn=$dn"
+    uci -q set "bd-controls.sched_$k.limit_up=$up"
+    uci -q commit bd-controls
+    cmd_apply >/dev/null
+    echo ok
+}
+
+daemon () {
+    load_uci
+    fw_init
+    log "starting pid $$ fw=$(fw_status) poll=$(poll_sec)s"
+    echo $$ > "$TMP/daemon.pid"
+    trap 'shutdown_cleanup; exit 0' TERM INT HUP
+    LASTTS=$(now); full_status
+    local p t d
+    p=$(poll_sec)
+    while :; do
+        t=$(( $(now) + p ))
+        full_status 2>/dev/null || log "poll pass failed (continuing)"
+        d=$(( t - $(now) ))
+        [ "$d" -lt 1 ] && d=1          # slow pass: degrade to 1 Hz, never busy-spin
+        sleep "$d"
+    done
+}
+
+main () {
+    local cmd="$1"; shift
+    cmd="${cmd#-}"
+    fw_init 2>/dev/null          # cheap, sets BD_FW
+    case "$cmd" in
+        daemon)            daemon ;;
+        status|snapshot)   cmd_status "$@" ;;
+        apply|reload)      cmd_apply "$@" ;;
+        block)             cmd_block "$@" ;;
+        limit)             cmd_limit "$@" ;;
+        sched)             cmd_sched "$@" ;;
+        reset)             cmd_reset "$@" ;;
+        usage|stats)       cmd_usage "$@" ;;
+        shutdown)          shutdown_cleanup ;;
+        version)           echo "$VERSION" ;;
+        *)                 print_usage ;;
+    esac
+}

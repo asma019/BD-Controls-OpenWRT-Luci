@@ -1,0 +1,21 @@
+{
+	"luci-app-bd-controls": {
+		"description": "Grant access to the bd-controls LuCI application",
+
+		"read": {
+			"ubus": {
+				"luci": [ "exec" ]
+			}
+		},
+
+		"write": {
+			"ubus": {
+				"luci": [ "exec" ]
+			}
+		},
+
+		"exec": {
+			"allow": [ "/usr/bin/bd-controls" ]
+		}
+	}
+}

@@ -1,0 +1,21 @@
+{
+	"admin/bd-controls": {
+		"title": "BD Controls",
+		"order": 60,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-bd-controls" ]
+		}
+	},
+
+	"admin/bd-controls/overview": {
+		"title": "Overview",
+		"order": 1,
+		"action": {
+			"type": "view",
+			"path": "bd-controls/overview"
+		}
+	}
+}

@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# bd-controls - extremely lightweight per-user bandwidth monitoring and
+# control daemon + CLI for low-end OpenWrt routers (128-256MB RAM).
+#
+# Copyright (C) 2026 Mehedi Hasan <hello@mehedims.com>
+# SPDX-License-Identifier: GPL-2.0-only
+# https://github.com/asma019/BD-Controls-OpenWRT-Luci
+#
+# Commands:
+#   bd-controls status [-f]  JSON snapshot (fresh compute if daemon down)
+#   bd-controls daemon       main loop (run by /etc/init.d/bd-controls)
+#   bd-controls apply        (re)apply firewall + tc rules from uci now
+#   bd-controls block <mac> on|off
+#   bd-controls limit <mac> <dn_kbit> <up_kbit>
+#   bd-controls sched <mac> set|clear ...
+#   bd-controls reset <mac>
+#   bd-controls usage
+#   bd-controls shutdown     remove our fw/tc rules + tmpfs state
+#
+# Design: POSIX sh + busybox awk ONLY - no daemon languages, no db, no jq.
+# All usage state is volatile (tmpfs /tmp/bd) and dies with the router;
+# the only durable values are the UCI config (block / limits / schedule /
+# name), committed by the CLI. Flash writes are therefore ~zero. Firewall
+# rules are rebuilt atomically from a desired-state fingerprint, and stop/
+# uninstall removes every rule + qdisc we created.
+
+VERSION=1.1.0
+TMP=/tmp/bd
+DATA_DIR=/etc/bd-data
+POLL=2
+RETAIN=1800
+FLASH_EVERY=300
+KEEP_DAYS=7
+DISC_MAX=30
+
+mkdir -p "$TMP" "$TMP/u" "$TMP/spd" 2>/dev/null
+
+. /lib/functions.sh 2>/dev/null          # config_load / config_get
+. /usr/share/bd-controls/libbase.sh      # utils, uci, policy, leases, ipmap, state
+. /usr/share/bd-controls/libsys.sh       # /proc sampling, counter merge, speeds
+. /usr/share/bd-controls/libfw.sh        # nftables/iptables backend
+. /usr/share/bd-controls/libapply.sh     # rules, tc shaping, persistence, disc
+. /usr/share/bd-controls/libjson.sh      # status / usage emitters
+. /usr/share/bd-controls/cli             # command dispatch, daemon loop
+
+main "$@"
