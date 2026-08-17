@@ -16,8 +16,11 @@
 #   git clone https://github.com/asma019/BD-Controls-OpenWRT-Luci.git
 #   cd $TOPDIR
 #   make defconfig
-#   make package/BD-Controls-OpenWRT-Luci/{clean,compile}
+#   make package/BD-Controls-OpenWRT-Luci/compile
 #   find bin -name '*.apk'
+#
+# Quick start (auto-detecting install script in this repo):
+#   curl -fsSL https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/main/install.sh | sh
 #
 
 include $(TOPDIR)/rules.mk

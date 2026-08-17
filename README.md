@@ -71,6 +71,41 @@ schedule per row), the disconnected-sessions log, and the two bar charts.
 
 ## Installation
 
+### 0. One-command install (auto-detects)
+
+The repo ships a self-contained installer that clones, builds, installs and
+sets everything up in one go — it figures out what kind of machine it's
+running on:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/main/install.sh | sh
+```
+
+| where you run it | what it does |
+|---|---|
+| **on the router** | detects `opkg` vs `apk`, installs the two packages (from local `.apk/.ipk` files in the current dir / `$BD_PKGDIR`, otherwise from the router's configured feeds), enables + starts the service, runs a sanity check and prints setup notes |
+| **on an OpenWrt build host** | finds the source tree (`rules.mk`), clones the repo into `package/BD-Controls-OpenWRT-Luci`, runs `make defconfig` only if missing, builds both packages, then prints the copy/install step — or pushes straight to a router with `--router <ip>` |
+
+Safety & error handling built in:
+
+- **stops at the first error** with a clear message (`set -e`); every required
+  command is verified before it is used (curl/wget/uclient-fetch, git,
+  opkg/apk, scp/ssh),
+- **never overwrites** your existing build `.config` or `/etc/config` files,
+- keeps `tc` shaping **off** by default — nothing beyond the service's own
+  rules is ever touched on the router,
+- **idempotent** — re-running updates rather than duplicating.
+
+Prefer to review before running? Download and inspect first:
+
+```sh
+curl -fsSL -o install.sh https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/main/install.sh
+sh install.sh --help                       # all options
+sh install.sh --router 192.168.1.1         # build host: also push + install
+```
+
+The rest of this section documents the same flow manually.
+
 ### 1. Get the source
 
 ```sh
@@ -105,11 +140,15 @@ The package is self-contained — it has no upstream download step.
 ```sh
 cd $TOPDIR
 make defconfig                      # or: make menuconfig → LuCI → Applications
-make package/BD-Controls-OpenWRT-Luci/{clean,compile}
+make package/BD-Controls-OpenWRT-Luci/clean    # optional, for a fresh rebuild
+make package/BD-Controls-OpenWRT-Luci/compile
 
 # locate the artifacts (named after each package, not the folder)
 find bin -name 'bd*'
 ```
+
+(`{clean,compile}` is a bash shortcut for the same two `make` targets; the
+plain form above works in any shell, including `dash`/busybox.)
 
 This produces two packages:
 
