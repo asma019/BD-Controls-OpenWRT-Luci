@@ -13,8 +13,10 @@
 			"file": {
 				"/usr/bin/bd-controls block *": [ "exec" ],
 				"/usr/bin/bd-controls limit *": [ "exec" ],
+				"/usr/bin/bd-controls name *": [ "exec" ],
 				"/usr/bin/bd-controls reset *": [ "exec" ],
-				"/usr/bin/bd-controls sched *": [ "exec" ]
+				"/usr/bin/bd-controls sched *": [ "exec" ],
+				"/usr/bin/bd-controls settings *": [ "exec" ]
 			}
 		}
 	}

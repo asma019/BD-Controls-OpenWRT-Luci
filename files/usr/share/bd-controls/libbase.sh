@@ -11,6 +11,12 @@ log ()         { echo "bd-controls: $*" >&2; }
 esc ()         { printf '%s' "$1" | sed 's#\\#\\\\#g; s#"#\\"#g; s#\t#\\t#g; s#\r##g'; }
 keymac ()      { echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/://g'; }
 namefmt ()     { echo "$1" | tr -c 'A-Za-z0-9_.-' '_'; }
+cfg_name () {          # $1 client key -> UCI user-section name ('' if unset)
+    local s
+    for s in $HAVE; do
+        case "$s" in "$1"\|*) echo "$s" | cut -d'|' -f5; return 0;; esac
+    done
+}
 format_mac ()  { echo "$1" | sed 's/\(..\)/\1:/g; s/:$//' | tr 'a-f' 'A-F'; }
 poll_sec ()    { echo "${POLL_SEC:-2}"; }
 
@@ -25,6 +31,10 @@ load_uci () {
     config_get DATA_FROM monitor data_dir "$DATA_DIR"
     [ -n "$DATA_FROM" ] && DATA_DIR="$DATA_FROM"
     config_get IFACES    monitor ifaces ""
+    config_get KP_HOURS  monitor keep_hours 24
+    config_get KP_DAYS   monitor keep_days 7
+    config_get RET       monitor retain 1800
+    config_get DISC      monitor disc 30
     config_get_bool TC_ENABLED tc enabled 0
     config_get TC_IFLAN  tc iface_lan ""
     config_get TC_IFWAN  tc iface_wan ""

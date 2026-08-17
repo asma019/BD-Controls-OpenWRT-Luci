@@ -12,7 +12,9 @@ usage: $0 <command>
   apply | reload          re-apply firewall + tc rules from uci now
   block <mac> on|off      block/unblock a client (persistent)
   limit <mac> <dn> <up>   per-user speed cap in kbit (0 = off, persists)
-  reset <mac>             zero lifetime counters for a client
+  name <mac> <name>       set a friendly client name (persistent)
+  reset <mac>|all         zero counters for a client (or all + history)
+  settings [k=v ...]      show daemon settings, or update whitelisted k=v
   usage                   hourly (24h) + daily (7d) history JSON
   shutdown                remove our fw/tc rules + tmpfs state (init stop)
   version
@@ -87,14 +89,115 @@ cmd_limit () {       # <mac> <dn_kbit> <up_kbit>
     echo ok
 }
 
-cmd_reset () {       # <mac>
-    [ $# -ge 2 ] || { echo "usage: reset <mac>" >&2; return 1; }
-    local k;  k=$(keymac "$1")
+cmd_reset () {       # <mac|all>
+    [ $# -ge 1 ] || { echo "usage: reset <mac|all>" >&2; return 1; }
+    local k
+    if [ "$1" = "all" ]; then
+        local f
+        for f in "$TMP"/u/*; do
+            [ -f "$f" ] || continue
+            k=${f##*/}
+            state_get "$k" && { S_RX=0; S_TX=0; S_DRX=0; S_DTX=0; state_put "$k"; }
+        done
+        rm -f "$TMP/hourly" "$TMP/hour.cur" "$TMP/disc" 2>/dev/null
+        rm -rf "$TMP/days" 2>/dev/null
+        echo ok
+        return 0
+    fi
+    k=$(keymac "$1")
     state_get "$k" && { S_RX=0; S_TX=0; S_DRX=0; S_DTX=0; state_put "$k"; }
     echo ok
 }
 
 cmd_usage () { usage_json; }
+
+cmd_name () {          # <mac> <name...>  (persist a friendly client name)
+    [ $# -ge 2 ] || { echo "usage: name <mac> <name>" >&2; return 1; }
+    local mac="$1"; shift
+    local nm
+    nm=$(printf '%s' "$*" | tr -d '[:cntrl:]' | cut -c1-32)
+    [ -n "$nm" ] || { echo "name must not be empty" >&2; return 1; }
+    local k; k=$(keymac "$mac")
+    ensure_user "$k" "$mac"
+    uci -q set "bd-controls.u_$k.name=$nm"
+    uci -q commit bd-controls
+    cmd_apply >/dev/null
+    echo ok
+}
+
+# ---- settings: whitelisted daemon options ---------------------------
+isint () {   # $1 min $2 val $3 max
+    echo "$2" | grep -qE '^[0-9]+$' || return 1
+    [ "$2" -ge "$1" ] 2>/dev/null && [ "$2" -le "$3" ] 2>/dev/null
+}
+isifname () { echo "$1" | grep -qE '^[a-zA-Z0-9._-]+$'; }
+isiflist () {           # space separated ifname tokens
+    [ -n "$1" ] || return 1
+    local t
+    for t in $1; do
+        echo "$t" | grep -qE '^[a-zA-Z0-9._-]+$' || return 1
+    done
+}
+
+settings_set_one () {   # $1 key $2 value ; writes uci (no commit)
+    case "$1" in
+        monitor.enabled|tc.enabled)
+            case "$2" in 0|1) ;;
+                *) echo "bad $1 '$2' (0 or 1)" >&2; return 1;; esac
+            uci -q set "bd-controls.$1=$2" ;;
+        monitor.poll)        isint 1    "$2" 300     || { echo "bad monitor.poll '$2' (1-300)" >&2; return 1; }
+                             uci -q set "bd-controls.monitor.poll=$2" ;;
+        monitor.ifaces)      isiflist "$2" || { echo "bad monitor.ifaces '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.monitor.ifaces=$2" ;;
+        monitor.keep_hours)  isint 1    "$2" 1024    || { echo "bad monitor.keep_hours '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.monitor.keep_hours=$2" ;;
+        monitor.keep_days)   isint 1    "$2" 31      || { echo "bad monitor.keep_days '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.monitor.keep_days=$2" ;;
+        monitor.retain)      isint 60   "$2" 604800  || { echo "bad monitor.retain '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.monitor.retain=$2" ;;
+        monitor.disc)        isint 5    "$2" 200     || { echo "bad monitor.disc '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.monitor.disc=$2" ;;
+        tc.iface_lan)        isifname "$2" || { echo "bad tc.iface_lan '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.tc.iface_lan=$2" ;;
+        tc.iface_wan)        isifname "$2" || { echo "bad tc.iface_wan '$2'" >&2; return 1; }
+                             uci -q set "bd-controls.tc.iface_wan=$2" ;;
+        tc.ceil)             isint 0    "$2" 1000000 || { echo "bad tc.ceil '$2' (0-1000000 kbit)" >&2; return 1; }
+                             uci -q set "bd-controls.tc.ceil=$2" ;;
+        *) echo "unknown setting '$1'" >&2; return 1 ;;
+    esac
+    return 0
+}
+
+settings_show () {       # print current settings as JSON (from UCI)
+    load_uci
+    printf '{"monitor":{"enabled":%s,"poll":%s,"ifaces":"%s",' \
+        "${MON_ENABLED:-1}" "${POLL_SEC:-2}" "$(esc "${IFACES:-}")"
+    printf '"keep_hours":%s,"keep_days":%s,"retain":%s,"disc":%s},' \
+        "${KP_HOURS:-24}" "${KP_DAYS:-7}" "${RET:-1800}" "${DISC:-30}"
+    printf '"tc":{"enabled":%s,"iface_lan":"%s","iface_wan":"%s","ceil":%s}}\n' \
+        "${TC_ENABLED:-0}" "$(esc "${TC_IFLAN:-}")" "$(esc "${TC_IFWAN:-}")" "${TC_CEIL:-100000}"
+}
+
+cmd_settings () {        # [key=value ...]
+    [ $# -gt 0 ] || { settings_show; return 0; }
+    local kv key val
+    for kv in "$@"; do
+        case "$kv" in
+            *=*) key=${kv%%=*}; val=${kv#*=} ;;
+            *) echo "bad setting '$kv' (want key=value)" >&2; return 1 ;;
+        esac
+        settings_set_one "$key" "$val" || return 1
+    done
+    uci -q commit bd-controls
+    load_uci
+    # disabled monitor = take BD Controls enforcement down (our rules only)
+    if [ "${MON_ENABLED:-1}" = 0 ]; then
+        fw_unload 2>/dev/null
+    fi
+    # apply_tc handles the tc.enabled=0 teardown itself
+    cmd_apply >/dev/null
+    echo ok
+}
 
 # regex validating HH:MM (24h)
 td_re="^([01][0-9]|2[0-3]):[0-5][0-9]$"
@@ -148,8 +251,9 @@ daemon () {
     trap 'shutdown_cleanup; exit 0' TERM INT HUP
     LASTTS=$(now); full_status
     local p t d
-    p=$(poll_sec)
     while :; do
+        # re-read poll each pass: a UCI poll change applies without restart
+        p=$(poll_sec)
         t=$(( $(now) + p ))
         full_status 2>/dev/null || log "poll pass failed (continuing)"
         d=$(( t - $(now) ))
@@ -168,6 +272,8 @@ main () {
         apply|reload)      cmd_apply "$@" ;;
         block)             cmd_block "$@" ;;
         limit)             cmd_limit "$@" ;;
+        name)              cmd_name "$@" ;;
+        settings)          cmd_settings "$@" ;;
         sched)             cmd_sched "$@" ;;
         reset)             cmd_reset "$@" ;;
         usage|stats)       cmd_usage "$@" ;;

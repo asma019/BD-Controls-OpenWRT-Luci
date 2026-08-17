@@ -27,7 +27,9 @@ sync_from_leases () {
                 n=$(now); S_ON=1; S_START=$n; S_SRX=0; S_STX=0
             fi
             [ -z "$S_IP" ] || [ "$S_IP" != "$ip" ] && S_IP="$ip"
-            [ -z "$S_NM" ] && S_NM="$nm"
+            # prefer a user-set UCI name over the DHCP lease hostname
+            if [ -n "$(cfg_name "$k")" ]; then S_NM="$(cfg_name "$k")"
+            elif [ -z "$S_NM" ]; then S_NM="$nm"; fi
             S_LAST=$(now)
             state_put "$k"
         else

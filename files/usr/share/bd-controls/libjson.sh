@@ -74,7 +74,13 @@ status_json () {
     done <<EOF
 $SCHED
 EOF
-    printf ']}'
+    printf '],"cfg":{"monitor":{"enabled":%s,"poll":%s,"ifaces":"%s",' \
+        "${MON_ENABLED:-1}" "${POLL_SEC:-2}" "$(esc "${IFACES:-}")"
+    printf '"keep_hours":%s,"keep_days":%s,"retain":%s,"disc":%s},' \
+        "${KP_HOURS:-24}" "${KP_DAYS:-7}" "${RET:-1800}" "${DISC:-30}"
+    printf '"tc":{"enabled":%s,"iface_lan":"%s","iface_wan":"%s","ceil":%s}}' \
+        "${TC_ENABLED:-0}" "$(esc "${TC_IFLAN:-}")" "$(esc "${TC_IFWAN:-}")" "${TC_CEIL:-100000}"
+    printf '}'
     printf '\n'
 }
 
@@ -107,6 +113,39 @@ usage_json () {    # hourly buckets (24h) + current hour + daily totals (7d)
         first=0
         printf '{"d":%s,"rx":%s,"tx":%s}' "$d" "$drx" "$dtx"
     done
+    printf '],"udays":['
+    # per-client daily totals from the same tmpfs buckets ($TMP/days/<date>).
+    # line format "key<TAB>today_rx<TAB>today_tx" - group by key across the
+    # keep window. Grouping needs the lines sorted by key first.
+    local cur="" first3=1 kk drx dtx dd
+    : > "$TMP/udays.tmp"
+    for dd in $(ls "$TMP/days/" 2>/dev/null | sort); do
+        [ -f "$TMP/days/$dd" ] || continue
+        while IFS="$(printf '\t')" read -r kk drx dtx rest; do
+            [ -n "$kk" ] || continue
+            printf '%s\t%s\t%s\t%s\n' "$kk" "$dd" "$drx" "$dtx" >> "$TMP/udays.tmp"
+        done < "$TMP/days/$dd"
+    done
+    if [ -s "$TMP/udays.tmp" ]; then
+        sort "$TMP/udays.tmp" > "$TMP/udays.srt"
+        while IFS="$(printf '\t')" read -r kk dd drx dtx; do
+            if [ "$kk" != "$cur" ]; then
+                [ -n "$cur" ] && printf ']}'
+                [ $first3 = 0 ] && printf ','
+                first3=0
+                state_get "$kk" 2>/dev/null
+                printf '{"mac":"%s","name":"%s","days":[' \
+                    "$(format_mac "$kk")" "$(esc "${S_NM:-}")"
+                cur="$kk"
+            else
+                printf ','
+            fi
+            printf '{"d":"%s","rx":%s,"tx":%s}' "$dd" "$drx" "$dtx"
+        done < "$TMP/udays.srt"
+        [ -n "$cur" ] && printf ']}'
+        rm -f "$TMP/udays.srt"
+    fi
+    rm -f "$TMP/udays.tmp"
     printf ']}'
     printf '\n'
 }

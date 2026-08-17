@@ -9,6 +9,11 @@ config monitor
 	# persist, in this config file. data_dir is reserved for future use.
 	option data_dir '/etc/bd-data'
 	option ifaces 'br-lan'
+	# optional tuning (defaults shown - editable from the web UI):
+	# option keep_hours '24'   # hourly buckets kept for the 24h chart
+	# option keep_days '7'     # daily buckets kept for the 7d charts
+	# option retain '1800'     # seconds a client stays armed after going offline
+	# option disc '30'         # disconnect sessions kept in history
 
 config tc
 	option enabled '0'

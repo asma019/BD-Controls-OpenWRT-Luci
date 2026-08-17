@@ -25,7 +25,7 @@
 # rules are rebuilt atomically from a desired-state fingerprint, and stop/
 # uninstall removes every rule + qdisc we created.
 
-VERSION=1.1.0
+VERSION=1.1.0-r4
 TMP=/tmp/bd
 DATA_DIR=/etc/bd-data
 POLL=2

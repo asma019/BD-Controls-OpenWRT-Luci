@@ -286,12 +286,19 @@ one file and nothing else).
 Per client you can:
 
 - block / unblock (persisted to UCI),
-- set download / upload caps in kbit (applied immediately),
+- set download / upload caps in kbit (applied immediately), or use the
+  one-click quick presets (256k / 512k / 1M / 2M / unlimited),
+- rename the client (a friendly name that overrides the DHCP hostname),
 - reset the counters,
-- maintain the weekly schedule (mode selector, `HH:MM` window, `mon..sun`
-  days, and caps for limit mode).
+- maintain the weekly schedule (day-toggle chips, `type="time"` inputs, mode
+  selector, and caps for limit mode),
+- inspect the client's own 7-day traffic in the per-client chart.
 
-Below the table: recent disconnected sessions, then the 24 h and 7-day charts.
+The page is tabbed (Status / Clients / Schedules / Settings). Status shows the
+live router state plus interactive 24 h and 7-day charts (hover a bar for
+exact numbers, click to pin it); Clients adds per-user totals with a 7-day
+mini chart per row; Settings edits the daemon options from the UI. The poll
+interval is adjustable (1–60 s) in the header.
 
 ### CLI — full reference
 
@@ -308,7 +315,11 @@ any form (`aa:bb:cc:dd:ee:ff`, `AABBCCDDEEFF`, …) and normalized internally.
 | `bd-controls limit <mac> <dn> <up>` | per-user speed cap in kbit, `0` = off — **persistent** |
 | `bd-controls sched <mac> set <days> <start> <end> <mode> [dn] [up]` | create/replace the client's weekly schedule — **persistent** |
 | `bd-controls sched <mac> clear` | remove the client's schedule |
+| `bd-controls name <mac> <name>` | set a friendly client name — **persistent** |
 | `bd-controls reset <mac>` | zero the client's tmpfs usage counters |
+| `bd-controls reset all` | zero every client's counters and clear history |
+| `bd-controls settings` | print the current daemon settings as JSON |
+| `bd-controls settings <k=v> …` | update whitelisted daemon options — **persistent** |
 | `bd-controls usage` | hourly (24 h) + daily (7 d) history JSON |
 | `bd-controls shutdown` | remove our fw/tc rules + tmpfs state (init stop) |
 | `bd-controls version` | print the version |
@@ -332,8 +343,29 @@ bd-controls block 00:11:22:33:44:55 on
 bd-controls limit 00:11:22:33:44:55 2048 1024        # 2 Mbit down / 1 Mbit up
 bd-controls sched 00:11:22:33:44:55 set "mon tue wed thu fri" 22:00 07:00 1
 bd-controls sched 00:11:22:33:44:55 clear
-bd-controls reset 00:11:22:33:44:55
+bd-controls name 00:11:22:33:44:55 "Dad's phone"
+bd-controls reset all
+bd-controls settings monitor.poll=5 tc.ceil=200000
 ```
+
+**`settings` whitelist** — only these keys are accepted, each range-checked
+before any UCI write (bad values change nothing):
+
+| key | range / format |
+|---|---|
+| `monitor.enabled` / `tc.enabled` | `0` \| `1` |
+| `monitor.poll` | 1–300 seconds |
+| `monitor.ifaces` | space-separated interface names |
+| `monitor.keep_hours` | 1–1024 |
+| `monitor.keep_days` | 1–31 |
+| `monitor.retain` | 60–604800 seconds |
+| `monitor.disc` | 5–200 sessions |
+| `tc.iface_lan` / `tc.iface_wan` | interface name |
+| `tc.ceil` | 0–1000000 kbit |
+
+A poll change applies on the next daemon pass (no restart, so volatile usage
+is preserved); disabling the monitor removes our firewall rules; disabling tc
+tears down the shaping qdisc.
 
 ---
 
