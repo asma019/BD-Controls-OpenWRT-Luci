@@ -84,7 +84,28 @@ curl -fsSL https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/ma
 | where you run it | what it does |
 |---|---|
 | **on the router** | detects `opkg` vs `apk`, installs the two packages (from local `.apk/.ipk` files in the current dir / `$BD_PKGDIR`, otherwise from the router's configured feeds), enables + starts the service, runs a sanity check and prints setup notes |
-| **on an OpenWrt build host** | finds the source tree (`rules.mk`), clones the repo into `package/BD-Controls-OpenWRT-Luci`, runs `make defconfig` only if missing, builds both packages, then prints the copy/install step — or pushes straight to a router with `--router <ip>` |
+| **on an OpenWrt build host** | finds the source tree (`rules.mk`), clones the repo into `package/BD-Controls-OpenWRT-Luci`, runs `make defconfig` only if missing, builds both packages, then **auto-detects your router** (your LAN's default gateway) and pushes + installs onto it in one go — no IP to type |
+
+**Router IP is never assumed.** Your router does *not* need to be
+`192.168.1.1`. On the build host the installer figures out the router's
+address by itself, trying in order:
+
+1. the **default route gateway** (`ip route` / `route -n` /
+   `/proc/net/route`) — on a normal LAN that *is* the router, whatever its IP
+   (`192.168.2.1`, `10.0.0.1`, …),
+2. common hostnames (`openwrt.lan`, `immortalwrt.lan`),
+3. anything you pass explicitly — `--router` accepts any IP *or hostname*
+   and always wins.
+
+If nothing can be detected it prints the copy/install commands with a
+`<router-ip>` placeholder instead of guessing. To control the push yourself:
+
+```sh
+sh install.sh --router 192.168.2.1         # any IP works
+sh install.sh --router openwrt.lan         # or a hostname
+sh install.sh --user admin --port 2222 --router 192.168.2.1
+sh install.sh --no-push                    # build only, print the next step
+```
 
 Safety & error handling built in:
 
@@ -94,6 +115,9 @@ Safety & error handling built in:
 - **never overwrites** your existing build `.config` or `/etc/config` files,
 - keeps `tc` shaping **off** by default — nothing beyond the service's own
   rules is ever touched on the router,
+- **auto-push is conservative** — the detected gateway is only pushed to when
+  it's a private LAN address (`10.*`, `172.16-31.*`, `192.168.*`); anything
+  unusual just prints the next step,
 - **idempotent** — re-running updates rather than duplicating.
 
 Prefer to review before running? Download and inspect first:
@@ -101,7 +125,6 @@ Prefer to review before running? Download and inspect first:
 ```sh
 curl -fsSL -o install.sh https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/main/install.sh
 sh install.sh --help                       # all options
-sh install.sh --router 192.168.1.1         # build host: also push + install
 ```
 
 The rest of this section documents the same flow manually.

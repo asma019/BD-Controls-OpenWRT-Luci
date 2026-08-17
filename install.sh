@@ -17,8 +17,10 @@
 #   ON AN OPENWRT BUILD HOST (an OpenWrt source tree; has rules.mk)
 #     -> clones this repo into package/BD-Controls-OpenWRT-Luci,
 #        builds BOTH packages (i.e. bd-controls + luci-app-bd-controls),
-#        and either prints the next step or, with --router <ip>, pushes
-#        and installs them on the router over scp/ssh.
+#        then auto-detects the router (default gateway, any IP like
+#        192.168.2.1 or 10.0.0.1) and pushes + installs over scp/ssh.
+#        --router <ip|host> overrides detection; --no-push prints the
+#        next step instead.
 #
 # Safety:
 #   * set -e: stops at the first failure and prints a clear message
@@ -30,7 +32,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/asma019/BD-Controls-OpenWRT-Luci/main/install.sh | sh
 #   sh install.sh --help
-#   sh install.sh --router 192.168.1.1     # build host: also push + install
+#   sh install.sh --router 192.168.2.1     # push to any router IP, or auto-detect
 #
 set -eu
 
@@ -54,17 +56,25 @@ Auto-detects the environment and installs BD Controls:
 
   On an OpenWrt router ......... installs the two packages, enables and
                                 starts the service, runs a sanity check.
-  On an OpenWrt build host .... clones the repo, builds both packages,
-                                prints the next step (or pushes to a
-                                router with --router).
+  On an OpenWrt build host .... clones the repo, builds both packages, then
+                                auto-detects your router (your default
+                                gateway) and pushes + installs it in one go.
 
 Options:
-  --router <ip|host>   build host: also "scp + install" onto the router
+  --router <ip|host>   router to push to. Any IP/hostname works - your router
+                       does NOT need to be 192.168.1.1 (e.g. 192.168.2.1,
+                       10.0.0.1, openwrt.lan ...). When omitted it is
+                       auto-detected from your default gateway.
   --router=<ip|host>   same as above
+  --user <name>        ssh user for the router (default: root)
+  --port <n>           ssh/scp port (default: 22)
+  --no-push            build host: build only, do not push, just print the
+                       next step with the detected router address
   --skip-build         router: only install local artifacts/feeds, skip build
   -h, --help           show this help
 
 Env:
+  BD_ROUTER=<ip|host>  router address (same as --router)
   BD_PKGDIR=<dir>      router: directory containing bd-controls_*.apk/ipk
 EOF
 }
@@ -179,6 +189,72 @@ find_topdir(){               # find an OpenWrt source tree from cwd upward
     return 1
 }
 
+hex_ip(){                    # little-endian hex from /proc/net/route -> dotted quad
+    local h=$1
+    printf '%d.%d.%d.%d' \
+        $((16#$(echo "$h" | cut -c7-8))) \
+        $((16#$(echo "$h" | cut -c5-6))) \
+        $((16#$(echo "$h" | cut -c3-4))) \
+        $((16#$(echo "$h" | cut -c1-2)))
+}
+
+detect_router_ip(){          # best-effort: echo the router's address or fail
+    local gw=""
+    # try each method in turn; fall through when a tool exists but yields nothing
+    if have ip; then
+        gw=$(ip route 2>/dev/null | awk '$1=="default"{print $3; exit}')
+        [ -n "$gw" ] && [ "$gw" != "0.0.0.0" ] && { echo "$gw"; return 0; }
+    fi
+    if have route; then
+        gw=$(route -n 2>/dev/null | awk '$1=="0.0.0.0"{print $2; exit}')
+        [ -n "$gw" ] && [ "$gw" != "0.0.0.0" ] && { echo "$gw"; return 0; }
+    fi
+    if [ -r /proc/net/route ]; then
+        gw=$(awk '$2=="00000000"{print $3; exit}' /proc/net/route 2>/dev/null)
+        if [ -n "$gw" ] && [ "$gw" != "00000000" ]; then
+            gw=$(hex_ip "$gw")
+            echo "$gw"; return 0
+        fi
+    fi
+    # last resort: common OpenWrt hostnames (mDNS / /etc/hosts)
+    for h in openwrt.lan immortalwrt.lan openwrt; do
+        if have getent; then
+            getent hosts "$h" >/dev/null 2>&1 && { echo "$h"; return 0; }
+        elif have ping; then
+            ping -c1 -W1 "$h" >/dev/null 2>&1 && { echo "$h"; return 0; }
+        fi
+    done
+    return 1
+}
+
+is_private(){                # $1 = dotted quad; true only for RFC1918 LAN space
+    local a b
+    a=${1%%.*}
+    b=$(echo "$1" | cut -d. -f2)
+    case "$a" in
+        10)   return 0 ;;
+        172)  [ "$b" -ge 16 ] && [ "$b" -le 31 ] && return 0 ;;
+        192)  [ "$b" = 168 ] && return 0 ;;
+    esac
+    return 1
+}
+
+resolve_router(){            # echo 'user@host' from --router, BD_ROUTER, or detection
+    local user="${RHUSER:-root}" host="${ROUTER:-}"
+    if [ -z "$host" ]; then
+        host=$(detect_router_ip) || die "could not detect your router's IP - pass --router <ip|host> (any IP works, e.g. 192.168.2.1)"
+        info "auto-detected router as $host (override with --router <ip|host>)" >&2
+    fi
+    case "$host" in
+        *://*) host=${host#*://} ;;          # strip any ssh:// prefix
+    esac
+    case "$host" in
+        *@*) user=${host%%@*}; host=${host#*@} ;;   # honor user@ given explicitly
+    esac
+    [ -n "$host" ] || die "no usable router address - pass --router <ip|host>"
+    echo "$user@$host"
+}
+
 host_build(){
     have git || die "git is required on the build host (apt install git / opkg install git)"
     local TOPDIR
@@ -203,7 +279,7 @@ host_build(){
     make -C "$TOPDIR" "package/$BD_DIR/clean" >/dev/null 2>&1 || :
     make -C "$TOPDIR" V=s "package/$BD_DIR/compile" || die "build failed - see output above"
 
-    local arts
+    local arts PUSH=0 DET=""
     arts=$(find "$TOPDIR/bin" \( -name 'bd-controls_*' -o -name 'luci-app-bd-controls_*' \) 2>/dev/null) || true
     if [ -z "$arts" ]; then
         warn "no built artifacts found under $TOPDIR/bin"
@@ -211,51 +287,84 @@ host_build(){
     fi
     for a in $arts; do ok "artifact: $a"; done
 
-    if [ -n "${ROUTER:-}" ]; then
+    # decide whether to push, and to whom
+    if [ "$NOPUSH" = 1 ]; then
+        PUSH=0
+        DET=$(detect_router_ip 2>/dev/null) || DET=""
+    elif [ -n "${ROUTER:-}" ]; then
+        PUSH=1                                   # explicit --router: always push
+    elif DET=$(detect_router_ip 2>/dev/null); then
+        case "$DET" in
+            *.*.*.*) is_private "$DET" && { PUSH=1; info "auto-detected router as $DET (this LAN's gateway)"; } ;;
+            *)       PUSH=1; info "auto-detected router as $DET" ;;
+        esac
+    fi
+
+    if [ "$PUSH" = 1 ]; then
         push_and_install "$TOPDIR/bin" "$arts"
     else
+        DET="${DET:-<router-ip>}"
         cat <<EOF
 
   ---------- next step ----------
-  Copy to the router and install:
+  Copy to the router and install ($DET):
 
-    scp $TOPDIR/bin/*/packages/*/bd-controls_* root@ROUTER:/tmp/
-    scp $TOPDIR/bin/*/packages/*/luci-app-bd-controls_* root@ROUTER:/tmp/
-    ssh root@ROUTER 'opkg update && opkg install --force-reinstall /tmp/bd-controls_* /tmp/luci-app-bd-controls_*'
+    scp $TOPDIR/bin/*/packages/*/bd-controls_* root@$DET:/tmp/
+    scp $TOPDIR/bin/*/packages/*/luci-app-bd-controls_* root@$DET:/tmp/
+    ssh root@$DET 'opkg update && opkg install --force-reinstall /tmp/bd-controls_* /tmp/luci-app-bd-controls_*'
 
   (apk-based images: apk add --allow-untrusted -f /tmp/bd-controls_* /tmp/luci-app-bd-controls_*)
-  Or rerun on the router:  curl -fsSL .../install.sh | sh
+  Tip: 'sh install.sh --router $DET' does the copy + install for you in one go.
   ------------------------------------------------------------------
 EOF
     fi
 }
 
 push_and_install(){          # $1 = bin dir  $2 = artifacts (multi-line)
-    have scp || die "scp is required for --router"
-    have ssh || die "ssh is required for --router"
-    info "pushing to root@$ROUTER"
-    scp -q $2 root@"$ROUTER":/tmp/ || die "scp failed"
+    have scp || die "scp is required to push to the router (apt install openssh-client)"
+    have ssh || die "ssh is required to push to the router (apt install openssh-client)"
+    local RHOST
+    RHOST=$(resolve_router) || return 1
+    info "pushing to $RHOST (port ${PORT:-22})"
+    $SCP $2 "$RHOST:/tmp/" || die "scp to $RHOST failed - is the address right? override with --router <ip|host>"
     info "detecting package manager on the router and installing"
-    if ssh root@"$ROUTER" 'command -v apk >/dev/null 2>&1' 2>/dev/null; then
-        ssh root@"$ROUTER" 'apk update && apk add --allow-untrusted -f /tmp/bd-controls_* /tmp/luci-app-bd-controls_*' || die "remote apk install failed"
+    if $SSH "$RHOST" 'command -v apk >/dev/null 2>&1'; then
+        $SSH "$RHOST" 'apk update && apk add --allow-untrusted -f /tmp/bd-controls_* /tmp/luci-app-bd-controls_*' || die "remote apk install failed"
     else
-        ssh root@"$ROUTER" 'opkg update && opkg install --force-reinstall /tmp/bd-controls_* /tmp/luci-app-bd-controls_*' || die "remote opkg install failed"
+        $SSH "$RHOST" 'opkg update && opkg install --force-reinstall /tmp/bd-controls_* /tmp/luci-app-bd-controls_*' || die "remote opkg install failed"
     fi
-    ssh root@"$ROUTER" '/etc/init.d/bd-controls enable && /etc/init.d/bd-controls start' || die "could not start the service on the router"
-    ok "installed and started on $ROUTER"
+    $SSH "$RHOST" '/etc/init.d/bd-controls enable && /etc/init.d/bd-controls start' || die "could not start the service on the router"
+    ok "installed and started on $RHOST"
 }
 
 # ----------------------------------------------------------------------
 ROUTER=""
+RHUSER=""
+PORT=""
+NOPUSH=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --router)      ROUTER=$2; shift 2 ;;
         --router=*)    ROUTER=${1#--router=}; shift ;;
+        --user)        RHUSER=$2; shift 2 ;;
+        --user=*)      RHUSER=${1#--user=}; shift ;;
+        --port)        PORT=$2; shift 2 ;;
+        --port=*)      PORT=${1#--port=}; shift ;;
+        --no-push)     NOPUSH=1; shift ;;
         --skip-build)  : ;;                        # accepted for forward-compat
         -h|--help)     usage; exit 0 ;;
         *)             die "unknown option: $1 (see --help)" ;;
     esac
 done
+: "${ROUTER:=${BD_ROUTER:-}}"                     # honor BD_ROUTER env as --router
+
+# Non-interactive-friendly ssh/scp: short connect timeout, accept new host keys
+SSH="ssh -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
+SCP="scp -q -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
+if [ -n "$PORT" ]; then
+    SSH="$SSH -p $PORT"
+    SCP="$SCP -P $PORT"
+fi
 
 if is_router; then
     router_install
