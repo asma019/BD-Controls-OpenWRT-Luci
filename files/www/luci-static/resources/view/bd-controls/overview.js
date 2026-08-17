@@ -24,16 +24,20 @@
  */
 
 'require view';
-'require rpc';
+'require fs';
 
 const BD = '/usr/bin/bd-controls';
 
-const exec = rpc.declare({
-	object: 'luci',
-	method: 'exec',
-	params: ['command', 'params'],
-	expect: { result: ['rc', 'stdout', 'stderr'] }
-});
+/* The legacy "luci" rpcd object's exec method no longer exists in
+ * luci-base >= 25.x - commands now run through the "file" object via the
+ * fs module. fs.exec() resolves to { code, stdout, stderr }. */
+function runBD(argv) {
+	return fs.exec(BD, argv).then(function (res) {
+		if (Number(res.code) !== 0)
+			throw new Error('bd-controls: ' + (res.stderr || ('exit ' + res.code)));
+		return res.stdout;
+	});
+}
 
 const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 const MODES = {
@@ -223,10 +227,8 @@ return view.extend({
 
 	execCmd: function (argv) {
 		var self = this;
-		return exec(BD, argv).then(function (r) {
-			if (Number(r[0]) !== 0)
-				throw new Error('bd-controls: ' + (r[2] || 'command failed'));
-			return r[1];
+		return runBD(argv).then(function (stdout) {
+			return stdout;
 		}).catch(function (e) {
 			self.showError(e.message);
 			throw e;
@@ -315,10 +317,8 @@ return view.extend({
 	/* ---------------- polling ---------------- */
 	refreshStatus: function () {
 		var self = this;
-		return exec(BD, ['status']).then(function (r) {
-			if (Number(r[0]) !== 0)
-				throw new Error('bd-controls: ' + (r[2] || 'status failed'));
-			var st = JSON.parse(r[1]);
+		return runBD(['status']).then(function (stdout) {
+			var st = JSON.parse(stdout);
 			self.renderSystem(st.system || {}, st.net || []);
 			self.renderUsers(st.users || []);
 			self.renderSched(st.sched || [], st.users || []);
@@ -330,10 +330,8 @@ return view.extend({
 
 	refreshUsage: function () {
 		var self = this;
-		return exec(BD, ['usage']).then(function (r) {
-			if (Number(r[0]) !== 0)
-				throw new Error('bd-controls: ' + (r[2] || 'usage failed'));
-			var u = JSON.parse(r[1]);
+		return runBD(['usage']).then(function (stdout) {
+			var u = JSON.parse(stdout);
 			self.renderUsageGraph(self.$('#bd-graph-h'), u.hours || [], true);
 			self.renderUsageGraph(self.$('#bd-graph-d'), u.days || [], false);
 		}).catch(function () { /* non-critical poll */ });

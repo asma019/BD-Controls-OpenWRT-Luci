@@ -3,19 +3,19 @@
 		"description": "Grant access to the bd-controls LuCI application",
 
 		"read": {
-			"ubus": {
-				"luci": [ "exec" ]
+			"file": {
+				"/usr/bin/bd-controls status": [ "exec" ],
+				"/usr/bin/bd-controls usage": [ "exec" ]
 			}
 		},
 
 		"write": {
-			"ubus": {
-				"luci": [ "exec" ]
+			"file": {
+				"/usr/bin/bd-controls block *": [ "exec" ],
+				"/usr/bin/bd-controls limit *": [ "exec" ],
+				"/usr/bin/bd-controls reset *": [ "exec" ],
+				"/usr/bin/bd-controls sched *": [ "exec" ]
 			}
-		},
-
-		"exec": {
-			"allow": [ "/usr/bin/bd-controls" ]
 		}
 	}
 }
