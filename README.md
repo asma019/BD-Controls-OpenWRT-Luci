@@ -74,32 +74,40 @@ schedule per row), the disconnected-sessions log, and the two bar charts.
 ### 1. Get the source
 
 ```sh
-# clone into your OpenWrt build tree as a package
+# clone into your OpenWrt build tree — the folder keeps the repo name
 cd $TOPDIR/package
-git clone https://github.com/asma019/BD-Controls-OpenWRT-Luci.git bd-controls
+git clone https://github.com/asma019/BD-Controls-OpenWRT-Luci.git
 ```
 
-or download & extract a release tarball:
+The clone creates a folder named `BD-Controls-OpenWRT-Luci`, exactly like
+the repo — nothing to rename. The folder *is* the package: the whole tree
+under `files/` inside it is what gets installed.
+
+or download & extract a release tarball (extracts with a `-main` suffix —
+rename it to match the repo name):
 
 ```sh
 cd $TOPDIR/package
 curl -L -o bd-controls.tar.gz \
   https://github.com/asma019/BD-Controls-OpenWRT-Luci/archive/refs/heads/main.tar.gz
-tar -xzf bd-controls.tar.gz && mv BD-Controls-OpenWRT-Luci-main bd-controls
+tar -xzf bd-controls.tar.gz
+mv BD-Controls-OpenWRT-Luci-main BD-Controls-OpenWRT-Luci
 ```
 
-The package is self-contained (no upstream download) — the whole tree under
-`files/` is what gets installed.
+The package is self-contained — it has no upstream download step.
 
-### 2. Build the two packages
+### 2. Build the packages
+
+> OpenWrt targets packages by their **directory path**, not by the name in
+> the Makefile — so the target below uses the folder name. Both packages are
+> defined in this one Makefile, so a single target builds them both:
 
 ```sh
 cd $TOPDIR
 make defconfig                      # or: make menuconfig → LuCI → Applications
-make package/bd-controls/{clean,compile}
-make package/luci-app-bd-controls/{clean,compile}
+make package/BD-Controls-OpenWRT-Luci/{clean,compile}
 
-# locate the artifacts
+# locate the artifacts (named after each package, not the folder)
 find bin -name 'bd*'
 ```
 

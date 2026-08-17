@@ -10,13 +10,13 @@
 #                            tc/HTB shaping, schedule engine, volatile usage stats
 #   * luci-app-bd-controls - modern JS (client-side) LuCI frontend
 #
-# Get the source and build:
+# Get the source and build (the clone keeps the repo name as the folder;
+# OpenWrt targets packages by directory path, not by name):
 #   cd $TOPDIR/package
-#   git clone https://github.com/asma019/BD-Controls-OpenWRT-Luci.git bd-controls
+#   git clone https://github.com/asma019/BD-Controls-OpenWRT-Luci.git
 #   cd $TOPDIR
 #   make defconfig
-#   make package/bd-controls/{clean,compile}
-#   make package/luci-app-bd-controls/{clean,compile}
+#   make package/BD-Controls-OpenWRT-Luci/{clean,compile}
 #   find bin -name '*.apk'
 #
 
