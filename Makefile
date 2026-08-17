@@ -41,6 +41,18 @@ PKG_BUILD_PARALLEL:=1
 include $(INCLUDE_DIR)/package.mk
 
 # ------------------------------------------------------------------
+# No upstream sources to build: everything is bundled under ./files,
+# so the default compile/install steps (which run make inside
+# $(PKG_BUILD_DIR)) have nothing to do. File layout happens via the
+# Package/<name>/install sections below.
+# ------------------------------------------------------------------
+define Build/Compile
+endef
+
+define Build/Install
+endef
+
+# ------------------------------------------------------------------
 # Package metadata
 # ------------------------------------------------------------------
 define Package/bd-controls

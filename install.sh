@@ -107,10 +107,10 @@ root_check(){
 }
 
 # ------------------------------------------------------------- router side
-pick_artifact(){             # $1 = pkg name prefix; prints first match, if any
+pick_artifact(){             # $1 = pkg name prefix; match .ipk (name_*) and .apk (name-*)
     local d p
     for d in "${BD_PKGDIR:-.}" .; do
-        for p in "$d"/"$1"*; do
+        for p in "$d"/"$1"_* "$d"/"$1"-*; do
             [ -f "$p" ] && { echo "$p"; return 0; }
         done
     done
@@ -135,8 +135,10 @@ detect_arch(){                 # echo the package arch (aarch64_cortex-a53, mips
 install_local(){               # $1 = pm  $2 = bd-controls pkg  $3 = luci pkg
     info "installing: $2 $3"
     case "$1" in
-        opkg) opkg install --force-reinstall "$2" "$3" || die "opkg install failed" ;;
-        apk)  apk add --allow-untrusted -f -q "$2" "$3" || die "apk add failed" ;;
+        opkg) opkg update >/dev/null 2>&1 || :
+              opkg install --force-reinstall "$2" "$3" || die "opkg install failed" ;;
+        apk)  apk update >/dev/null 2>&1 || :
+              apk add --allow-untrusted -f -q "$2" "$3" || die "apk add failed" ;;
     esac
 }
 
@@ -151,11 +153,17 @@ install_feeds(){               # $1 = pm  (only used with --from-feed)
 }
 
 fetch_release(){               # $1 = pm; download the release tarball and install; 0=ok 1=unavailable
-    local pm=$1 arch rel
+    local pm=$1 arch rel rel_base
     arch=$(detect_arch) || { warn "cannot detect the CPU architecture - release download skipped"; return 1; }
     rel="bd-controls-$arch.tar.gz"
-    info "no local packages - trying the latest GitHub release ($rel)"
-    if ! fetch "$BD_URL/releases/$REL_REF/download/$rel" "$TMPD/$rel"; then
+    # GitHub URLs: latest -> releases/latest/download/..., any tag -> releases/download/<tag>/...
+    if [ "$REL_REF" = latest ]; then
+        rel_base="$BD_URL/releases/latest/download"
+    else
+        rel_base="$BD_URL/releases/download/$REL_REF"
+    fi
+    info "no local packages - trying the GitHub release $REL_REF ($rel)"
+    if ! fetch "$rel_base/$rel" "$TMPD/$rel"; then
         warn "release asset not found: $rel"
         return 1
     fi
@@ -164,8 +172,8 @@ fetch_release(){               # $1 = pm; download the release tarball and insta
         return 1
     fi
     local a1 a2
-    a1=$(find "$TMPD" -maxdepth 1 -name 'bd-controls_*' | head -1) || a1=""
-    a2=$(find "$TMPD" -maxdepth 1 -name 'luci-app-bd-controls_*' | head -1) || a2=""
+    a1=$(find "$TMPD" -maxdepth 1 \( -name 'bd-controls_*' -o -name 'bd-controls-*' \) | head -1) || a1=""
+    a2=$(find "$TMPD" -maxdepth 1 \( -name 'luci-app-bd-controls_*' -o -name 'luci-app-bd-controls-*' \) | head -1) || a2=""
     if [ -z "$a1" ] || [ -z "$a2" ]; then
         warn "release archive does not contain both packages"
         return 1
