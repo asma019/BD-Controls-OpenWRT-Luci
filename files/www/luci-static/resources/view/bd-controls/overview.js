@@ -23,8 +23,8 @@
  *   { hours:[{t,rx,tx}], days:[{d,rx,tx}] }   (d = "YYYYMMDD")
  */
 
-const view = require('view'),
-      rpc = require('rpc');
+'require view';
+'require rpc';
 
 const BD = '/usr/bin/bd-controls';
 
